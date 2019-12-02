@@ -1,0 +1,156 @@
+version: "3.5"
+services:
+  zookeeper-add-kafka-users:
+    image: confluentinc/cp-kafka:5.3.1-1
+    container_name: "zookeeper-add-kafka-users"
+    volumes:
+      - ./secrets/zk-1:/etc/kafka/secrets
+    networks:
+      - confluent
+    depends_on:
+      - zk-1
+    command: "bash -c 'echo Waiting for Zookeeper to be ready... && \
+    	cub zk-ready zk-1:2181 120 && \
+        kafka-configs --zookeeper zk-1:2181 --alter --add-config 'SCRAM-SHA-256=[password=broker-secret]' --entity-type users --entity-name broker && \
+        kafka-configs --zookeeper zk-1:2181 --alter --add-config 'SCRAM-SHA-256=[password=kafkaclient-secret]' --entity-type users --entity-name kafkaclient && \
+        kafka-configs --zookeeper zk-1:2181 --alter --add-config 'SCRAM-SHA-256=[password=metricsreporter-secret]' --entity-type users --entity-name metricsreporter &&
+        kafka-configs --zookeeper zk-1:2181 --alter --add-config 'SCRAM-SHA-256=[password=c3-secret]' --entity-type users --entity-name c3 &&
+        kafka-acls --authorizer-properties zookeeper.connect=zk-1:2181 --add --cluster --allow-principal User:kafkaclient --operation All --topic \\* --group \\* '"
+    environment:
+      KAFKA_BROKER_ID: ignored
+      KAFKA_ZOOKEEPER_CONNECT: ignored
+      KAFKA_OPTS: -Djava.security.auth.login.config=/etc/kafka/secrets/zookeeper_broker_client_jaas.conf
+
+  zk-1:
+    image: confluentinc/cp-zookeeper:5.3.1-1
+    hostname: zk-1
+    ports:
+      - "2181:2181"
+    container_name: zk-1
+    volumes:
+      - ./data/zk-1/log:/var/lib/zookeeper/log
+      - ./data/zk-1/data:/var/lib/zookeeper/data
+      - ./secrets/zk-1:/etc/kafka/secrets
+    networks:
+      - confluent
+    environment:
+      ZOOKEEPER_SERVER_ID: 1
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_INIT_LIMIT: 5
+      ZOOKEEPER_SYNC_LIMIT: 2
+      ZOOKEEPER_LOG4J_ROOT_LOGLEVEL: "INFO"
+      ZOOKEEPER_SERVERS: "zk-1:2888:3888"
+      # ZOOKEEPER_QUORUM_AUTH_ENABLE_SASL: "false"
+      # ZOOKEEPER_QUORUM_AUTH_SERVER_REQUIRE_SASL: "false"
+      # ZOOKEEPER_QUORUM_AUTH_LEARNER_REQUIRE_SASL: "false"
+      KAFKA_OPTS: -Djava.security.auth.login.config=/etc/kafka/secrets/zookeeper_server_jaas.conf
+        -Dquorum.auth.enableSasl=true
+        -Dquorum.auth.learnerRequireSasl=true
+        -Dquorum.auth.serverRequireSasl=true
+        -Dquorum.cnxn.threads.size=20
+        -Dzookeeper.authProvider.1=org.apache.zookeeper.server.auth.SASLAuthenticationProvider
+        -Dzookeeper.authProvider.2=org.apache.zookeeper.server.auth.DigestAuthenticationProvider
+        -DjaasLoginRenew=3600000
+        -DrequireClientAuthScheme=sasl
+        -Dquorum.auth.learner.loginContext=QuorumLearner
+        -Dquorum.auth.server.loginContext=QuorumServer
+
+  kafka-1:
+    image: confluentinc/cp-enterprise-kafka:5.3.1-1
+    hostname: kafka-1
+    depends_on:
+      - zk-1
+    ports:
+      - "9092:9092"
+    container_name: kafka-1
+    networks:
+      - confluent
+    volumes:
+      - ./data/kafka-1/data:/var/lib/kafka/data
+      - ./secrets/kafka-1:/etc/kafka/secrets
+    environment:
+      KAFKA_BROKER_ID: 101
+      KAFKA_ZOOKEEPER_CONNECT: "zk-1:2181"
+      KAFKA_ZOOKEEPER_SASL_ENABLED: "true"
+      KAFKA_ZOOKEEPER_SET_ACL: "true"
+      KAFKA_ADVERTISED_LISTENERS: "SASL_PLAINTEXT://kafka-1:9092"
+      KAFKA_SASL_ENABLED_MECHANISMS: "SCRAM-SHA-256"
+      KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL: "SCRAM-SHA-256"
+      KAFKA_SECURITY_INTER_BROKER_PROTOCOL: "SASL_PLAINTEXT"
+      KAFKA_AUTO_LEADER_REBALANCE_ENABLE: "false"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_DELETE_TOPIC_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_SUPER_USERS: "User:broker;User:metricsreporter;User:c3"
+      KAFKA_AUTHORIZER_CLASS_NAME: kafka.security.auth.SimpleAclAuthorizer
+      KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
+      KAFKA_LOG4J_ROOT_LOGLEVEL: "INFO"
+      KAFKA_LOG4J_LOGGERS: "kafka.authorizer.logger=INFO,kafka.controller=INFO,kafka.producer.async.DefaultEventHandler=INFO,state.change.logger=INFO"
+      KAFKA_OPTS: -Dzookeeper.sasl.client=true
+        -Dzookeeper.sasl.clientconfig=Client
+        -Djava.security.auth.login.config=/etc/kafka/secrets/broker_server_jaas.conf
+      # Needs more setup
+      # KAFKA_METRIC_REPORTERS: "io.confluent.metrics.reporter.ConfluentMetricsReporter"
+      CONFLUENT_SUPPORT_METRICS_ENABLE: "false"
+      #CONFLUENT_METRICS_REPORTER_TOPIC_REPLICAS: 1
+      #CONFLUENT_METRICS_REPORTER_BOOTSTRAP_SERVERS: "kafka-1:9092"
+      #CONFLUENT_METRICS_REPORTER_SECURITY_PROTOCOL: "SASL_PLAINTEXT"
+      #CONFLUENT_METRICS_REPORTER_SASL_MECHAISM: "SCRAM-SHA-256"
+
+  control-center:
+    image: confluentinc/cp-enterprise-control-center:5.3.1-1
+    hostname: control-center
+    container_name: control-center
+    restart: always
+    volumes:
+      - ./data/control-center:/data
+      - ./secrets/control-center:/secrets
+    networks:
+      - confluent
+    depends_on:
+      - zk-1
+      - kafka-1
+    ports:
+      - "9021:9021"
+    environment:
+      CONTROL_CENTER_BOOTSTRAP_SERVERS: kafka-1:9092
+      CONTROL_CENTER_ZOOKEEPER_CONNECT: zk-1:2181
+      # Both is needed!
+      CONTROL_CENTER_STREAMS_SECURITY_PROTOCOL: "SASL_PLAINTEXT"
+      CONTROL_CENTER_STREAMS_SASL_MECHANISM: "SCRAM-SHA-256"
+      CONTROL_CENTER_STREAMS_SASL_JAAS_CONFIG: org.apache.kafka.common.security.scram.ScramLoginModule required \
+        username="c3" password="c3-secret";
+      # Both is needed!
+      CONTROL_CENTER_SECURITY_PROTOCOL: "SASL_PLAINTEXT"
+      CONTROL_CENTER_SASL_MECHANISM: "SCRAM-SHA-256"
+      CONTROL_CENTER_SASL_JAAS_CONFIG: org.apache.kafka.common.security.scram.ScramLoginModule required \
+        username="c3" password="c3-secret";
+      CONTROL_CENTER_OPTS: -Djava.security.auth.login.config=/secrets/c3_jaas.conf
+      CONTROL_CENTER_DATA_DIR: "/data"
+      CONTROL_CENTER_REPLICATION_FACTOR: 1
+      CONTROL_CENTER_MONITORING_INTERCEPTOR_TOPIC_REPLICATION: 1
+      CONTROL_CENTER_INTERNAL_TOPICS_REPLICATION: 1
+      CONTROL_CENTER_COMMAND_TOPIC_REPLICATION: 1
+      CONTROL_CENTER_METRICS_TOPIC_REPLICATION: 1
+      CONTROL_CENTER_NUM_STREAM_THREADS: 3
+      CONTROL_CENTER_STREAMS_CONSUMER_REQUEST_TIMEOUT_MS: "960032"
+      #CONTROL_CENTER_CONNECT_CLUSTER: "connect:8083"
+      #CONTROL_CENTER_KSQL_URL: "http://ksql-server:8088"
+      #CONTROL_CENTER_KSQL_ADVERTISED_URL: "http://localhost:8088"
+      #CONTROL_CENTER_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
+     
+
+  tools:
+    image: cnfltraining/training-tools:5.3
+    hostname: tools
+    container_name: tools
+    volumes:
+      - ./secrets/tools:/secrets
+    networks:
+      - confluent
+    command: /bin/sh
+    tty: true
+
+networks:
+  confluent:

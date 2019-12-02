@@ -1,0 +1,130 @@
+docker-compose up -d
+docker-compose ps
+docker-compose down
+docker logs zk-1
+docker logs zookeeper-add-kafka-users
+docker logs -f kafka-1
+docker logs control-center
+docker stop kafka-1           # Stop single container
+
+
+----------------------------------------------------------------
+
+zookeeper-shell zk-1:2181 ls /
+[cluster, controller, brokers, zookeeper, kafka-acl, kafka-acl-changes, admin, isr_change_notification, log_dir_event_notification, controller_epoch, kafka-acl-extended, kafka-acl-extended-changes, consumers, latest_producer_id_block, config]
+
+zookeeper-shell zk-1:2181 ls /brokers/ids
+zookeeper-shell zk-1:2181 get /controller
+
+----------------------------------------------------------------
+
+docker-compose exec zk-1 /bin/bash
+
+# Einmal im Zookeeper Container:
+export KAFKA_OPTS="-Djava.security.auth.login.config=/etc/kafka/secrets/zookeeper_broker_client_jaas.conf"
+kafka-configs --zookeeper zk-1:2181 --describe --entity-type users
+kafka-configs --zookeeper zk-1:2181 --alter --add-config 'SCRAM-SHA-256=[password=broker-secret]' --entity-type users --entity-name broker
+kafka-configs --zookeeper zk-1:2181 --alter --add-config 'SCRAM-SHA-256=[password=metricsreporter-secret]' --entity-type users --entity-name metricsreporter
+kafka-configs --zookeeper zk-1:2181 --alter --add-config 'SCRAM-SHA-256=[password=c3-secret]' --entity-type users --entity-name c3
+kafka-configs --zookeeper zk-1:2181 --alter --add-config 'SCRAM-SHA-256=[password=kafkaclient-secret]' --entity-type users --entity-name kafkaclient
+kafka-configs --zookeeper zk-1:2181 --describe --entity-type users
+
+# Wenn der User (hier kafkaclient) kein Super-User ist und alle Rechte bekommen soll
+kafka-acls --authorizer-properties zookeeper.connect=zk-1:2181 --list
+kafka-acls --authorizer-properties zookeeper.connect=zk-1:2181 --add --cluster --allow-principal User:kafkaclient --operation All --topic '*' --group '*'
+kafka-acls --authorizer-properties zookeeper.connect=zk-1:2181 --add --cluster --allow-principal User:c3 --operation All --topic '*' --group '*'
+
+----------------------------------------------------------------
+
+docker-compose exec tools /bin/bash
+
+# Kommandos im tools Container gegen Zookeeper
+
+export KAFKA_OPTS="-Djava.security.auth.login.config=secrets/zookeeper_broker_client_jaas.conf"
+kafka-acls --authorizer-properties zookeeper.connect=zk-1:2181 --list
+
+
+# Kommandos im tools Container gegen Broker mit KAFKA_OPTS
+
+export KAFKA_OPTS="-Djava.security.auth.login.config=secrets/admin_combined_jaas.conf -Dsecurity.protocol=SASL_PLAINTEXT -Dsasl.mechanism=SCRAM-SHA-256"
+
+kafka-topics --zookeeper zk-1:2181 --list
+kafka-topics --zookeeper zk-1:2181 kafka-1:9092 \
+--create \
+--partitions 8 \
+--replication-factor 1 \
+--topic test-perf-0
+
+
+# Kommandos im tools Container gegen Broker Properties File
+
+kafka-topics --bootstrap-server kafka-1:9092 --command-config secrets/client.properties --list
+
+kafka-topics --bootstrap-server kafka-1:9092 --command-config secrets/client.properties \
+--create \
+--partitions 8 \
+--replication-factor 1 \
+--topic test-perf-0
+
+kafka-topics --bootstrap-server kafka-1:9092 --command-config secrets/client.properties \
+--create \
+--partitions 8 \
+--replication-factor 1 \
+--topic test-console-0
+
+kafka-topics --bootstrap-server kafka-1:9092 --command-config secrets/client.properties --list
+
+kafka-console-producer --producer.config secrets/client.properties \
+    --broker-list kafka-1:9092 \
+    --topic test-console-0
+
+kafka-console-consumer --consumer.config secrets/client.properties \
+    --bootstrap-server kafka-1:9092 \
+    --group console-group-1 \
+    --topic test-console-0 \
+    --from-beginning
+
+while true; do sleep 1; echo $(date +%Y-%m-%dT%H-%M-%S); done | kafka-console-producer --producer.config secrets/client.properties \
+  --broker-list kafka-1:9092 --topic test-console-0
+
+----------------------------------------------------------------
+
+## Performance
+
+kafka-producer-perf-test --topic test-perf-0 --num-records 10000 --record-size 100 --throughput -1 \
+  --producer.config secrets/client.properties --producer-props bootstrap.servers=kafka-1:9092
+
+kafka-consumer-perf-test \
+    --consumer.config secrets/client.properties \
+    --broker-list kafka-1:9092 \
+    --topic test-perf-0 \
+    --group test-perf-0-group1 \
+    --threads 1 \
+    --show-detailed-stats \
+    --timeout 60000 \
+    --reporting-interval 1000 \
+    --messages 1000000
+
+----------------------------------------------------------------
+
+## New users
+
+export KAFKA_OPTS="-Djava.security.auth.login.config=secrets/zookeeper_broker_client_jaas.conf"
+kafka-configs --zookeeper zk-1:2181 --alter --add-config 'SCRAM-SHA-256=[password=producer1-secret]' --entity-type users --entity-name producer1
+kafka-configs --zookeeper zk-1:2181 --alter --add-config 'SCRAM-SHA-256=[password=consumer1-secret]' --entity-type users --entity-name consumer1
+
+kafka-acls --authorizer-properties zookeeper.connect=zk-1:2181 --add \
+  --allow-principal User:producer1 --producer --topic test-console-0 --group '*'
+kafka-acls --authorizer-properties zookeeper.connect=zk-1:2181 --add \
+  --allow-principal User:consumer1 --consumer --topic test-console-0 --group 'consumer-group1'
+
+kafka-console-producer --producer.config secrets/client-producer1.properties \
+    --broker-list kafka-1:9092 \
+    --topic test-console-0
+
+kafka-console-consumer --consumer.config secrets/consumer1.properties \
+    --bootstrap-server kafka-1:9092 \
+    --group consumer-group1 \
+    --topic test-console-0 \
+    --from-beginning
+
