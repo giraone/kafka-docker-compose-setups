@@ -53,12 +53,14 @@ services:
     restart: always
     networks:
       - confluent
+    volumes:
+      - ./data/control-center/data:/data
     ports:
       - "9021:9021"
     environment:
       CONTROL_CENTER_BOOTSTRAP_SERVERS: kafka-1:9092
       CONTROL_CENTER_ZOOKEEPER_CONNECT: zk-1:2181
-      CONTROL_CENTER_DATA_DIR: "/data/data-dir"
+      CONTROL_CENTER_DATA_DIR: "/data"
       CONTROL_CENTER_REPLICATION_FACTOR: 1
       CONTROL_CENTER_MONITORING_INTERCEPTOR_TOPIC_REPLICATION: 1
       CONTROL_CENTER_INTERNAL_TOPICS_REPLICATION: 1
