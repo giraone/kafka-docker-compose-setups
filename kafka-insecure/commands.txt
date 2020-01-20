@@ -1,0 +1,29 @@
+docker-compose up -d
+docker-compose ps
+docker-compose down
+docker logs zk-1
+docker logs -f kafka-1
+docker logs control-center
+docker stop kafka-1           # Stop single container
+
+----------------------------------------------------------------
+
+docker-compose exec tools /bin/bash
+
+kafka-topics --bootstrap-server kafka-1:9092 --list
+
+kafka-console-producer \
+    --broker-list kafka-1:9092 \
+    --topic test-console-0
+
+kafka-console-consumer \
+    --bootstrap-server kafka-1:9092 \
+    --group console-group-1 \
+    --topic test-console-0 \
+    --from-beginning
+
+while true; do sleep 1; echo $(date +%Y-%m-%dT%H-%M-%S); done | kafka-console-producer \
+  --broker-list kafka-1:9092 --topic test-console-0
+
+----------------------------------------------------------------
+
